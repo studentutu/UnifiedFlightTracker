@@ -1,29 +1,102 @@
+"""Geographic calculations for flight tracking."""
+
 import math
 
-def get_bounding_box(lat, lon, radius_nm):
-    R = 3440.065
-    max_lat = lat + math.degrees(radius_nm / R)
-    min_lat = lat - math.degrees(radius_nm / R)
-    max_lon = lon + math.degrees(radius_nm / R / math.cos(math.radians(lat)))
-    min_lon = lon - math.degrees(radius_nm / R / math.cos(math.radians(lat)))
+# Earth radius in nautical miles
+EARTH_RADIUS_NM = 3440.065
+
+# Earth radius in meters
+EARTH_RADIUS_M = 6371000.0
+
+# Maximum latitude to avoid division by zero at poles
+MAX_SAFE_LATITUDE = 89.9
+
+
+def get_bounding_box(
+    lat: float,
+    lon: float,
+    radius_nm: float
+) -> tuple[float, float, float, float]:
+    """
+    Calculate a bounding box around a point for API queries.
+
+    Args:
+        lat: Center latitude in degrees
+        lon: Center longitude in degrees
+        radius_nm: Radius in nautical miles
+
+    Returns:
+        Tuple of (min_lat, max_lat, min_lon, max_lon)
+    """
+    # Clamp latitude to avoid division by zero near poles
+    safe_lat = max(-MAX_SAFE_LATITUDE, min(MAX_SAFE_LATITUDE, lat))
+
+    lat_delta = math.degrees(radius_nm / EARTH_RADIUS_NM)
+    # Longitude degrees per NM varies with latitude
+    cos_lat = math.cos(math.radians(safe_lat))
+    lon_delta = math.degrees(radius_nm / EARTH_RADIUS_NM / cos_lat)
+
+    min_lat = lat - lat_delta
+    max_lat = lat + lat_delta
+    min_lon = lon - lon_delta
+    max_lon = lon + lon_delta
+
     return round(min_lat, 4), round(max_lat, 4), round(min_lon, 4), round(max_lon, 4)
 
-def haversine_distance(lat1, lon1, lat2, lon2):
-    R = 3440.065
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+
+def haversine_distance(
+    lat1: float,
+    lon1: float,
+    lat2: float,
+    lon2: float
+) -> float:
+    """
+    Calculate the great-circle distance between two points using the Haversine formula.
+
+    Args:
+        lat1, lon1: First point coordinates in degrees
+        lat2, lon2: Second point coordinates in degrees
+
+    Returns:
+        Distance in nautical miles
+    """
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-    return R * c
 
-def calculate_az_el(obs_lat, obs_lon, obs_alt_m, target_lat, target_lon, target_alt_m):
-    """
-    Calculates the Azimuth (degrees) and Elevation (degrees) of a target
-    relative to an observer using a spherical earth model.
-    """
-    R_EARTH = 6371000.0 # meters
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
+    return EARTH_RADIUS_NM * c
+
+
+def calculate_az_el(
+    obs_lat: float,
+    obs_lon: float,
+    obs_alt_m: float,
+    target_lat: float,
+    target_lon: float,
+    target_alt_m: float
+) -> tuple[float, float]:
+    """
+    Calculate Azimuth and Elevation of a target relative to an observer.
+
+    Uses a spherical Earth model for accurate results at aviation distances.
+
+    Args:
+        obs_lat: Observer latitude in degrees
+        obs_lon: Observer longitude in degrees
+        obs_alt_m: Observer altitude in meters above sea level
+        target_lat: Target latitude in degrees
+        target_lon: Target longitude in degrees
+        target_alt_m: Target altitude in meters above sea level
+
+    Returns:
+        Tuple of (azimuth_degrees, elevation_degrees)
+        - Azimuth: 0-360 degrees clockwise from North
+        - Elevation: -90 to +90 degrees from horizon
+    """
     lat1_rad = math.radians(obs_lat)
     lon1_rad = math.radians(obs_lon)
     lat2_rad = math.radians(target_lat)
@@ -31,45 +104,44 @@ def calculate_az_el(obs_lat, obs_lon, obs_alt_m, target_lat, target_lon, target_
 
     d_lon = lon2_rad - lon1_rad
 
-    # Azimuth Calculation (Bearing)
+    # Azimuth Calculation (initial bearing)
     y = math.sin(d_lon) * math.cos(lat2_rad)
-    x = math.cos(lat1_rad) * math.sin(lat2_rad) - math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(d_lon)
+    x = (math.cos(lat1_rad) * math.sin(lat2_rad) -
+         math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(d_lon))
     azimuth_rad = math.atan2(y, x)
     azimuth_deg = (math.degrees(azimuth_rad) + 360) % 360
 
-    # Elevation Calculation
+    # Elevation Calculation using spherical Earth model
 
-    # Central angle (gamma) between the two points on the sphere
-    sin_dlat_2 = math.sin((lat2_rad - lat1_rad) / 2)**2
-    sin_dlon_2 = math.sin(d_lon / 2)**2
+    # Central angle between the two points
+    sin_dlat_2 = math.sin((lat2_rad - lat1_rad) / 2) ** 2
+    sin_dlon_2 = math.sin(d_lon / 2) ** 2
     a = sin_dlat_2 + math.cos(lat1_rad) * math.cos(lat2_rad) * sin_dlon_2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
     # Distances from Earth center
-    r_obs = R_EARTH + obs_alt_m
-    r_target = R_EARTH + target_alt_m
+    r_obs = EARTH_RADIUS_M + obs_alt_m
+    r_target = EARTH_RADIUS_M + target_alt_m
 
-    # Slant Range (s) via Law of Cosines
-    s_sq = r_obs**2 + r_target**2 - 2 * r_obs * r_target * math.cos(c)
+    # Slant Range via Law of Cosines
+    s_sq = r_obs ** 2 + r_target ** 2 - 2 * r_obs * r_target * math.cos(c)
 
-    # Handle coincident points
+    # Handle coincident or very close points
     if s_sq <= 0.0001:
-        if r_target > r_obs: return 0.0, 90.0 # Directly above
-        elif r_target < r_obs: return 0.0, -90.0 # Directly below
-        else: return 0.0, 0.0 # Same point
+        if r_target > r_obs:
+            return round(azimuth_deg, 1), 90.0  # Directly above
+        elif r_target < r_obs:
+            return round(azimuth_deg, 1), -90.0  # Directly below
+        else:
+            return 0.0, 0.0  # Same point
 
     s = math.sqrt(s_sq)
 
-    # Zenith Angle (phi) via Law of Cosines
-    # The triangle is Center-Observer-Target.
-    # The angle calculated directly by Law of Cosines using r_t opposite is the angle at O between OC (Down) and OT.
-    # We want the angle between CO (Up) and OT.
-    # cos(angle_internal) = (r_obs^2 + s^2 - r_target^2) / (2 * r_obs * s)
-    # cos(zenith) = -cos(angle_internal) = (r_target^2 - r_obs^2 - s_sq) / (2 * r_obs * s)
+    # Zenith angle via Law of Cosines
+    # cos(zenith) relates the triangle formed by Earth center, observer, target
+    cos_phi = (r_target ** 2 - r_obs ** 2 - s_sq) / (2 * r_obs * s)
 
-    cos_phi = (r_target**2 - r_obs**2 - s_sq) / (2 * r_obs * s)
-
-    # Clamp value to [-1, 1] to avoid domain errors
+    # Clamp to valid domain to avoid floating point errors
     cos_phi = max(-1.0, min(1.0, cos_phi))
 
     phi = math.acos(cos_phi)

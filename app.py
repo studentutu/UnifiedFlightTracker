@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, render_template, request, jsonify
 from tracker.config import load_config, DEFAULT_CONFIG
 from tracker.api import fetch_flightaware, fetch_flightradar24
@@ -37,9 +38,37 @@ def get_flights():
     except (TypeError, ValueError):
         return jsonify({"flights": [], "messages": ["Invalid parameters"]}), 400
 
-    local_data, local_errors = fetch_local_data()
-    fa_data, fa_errors = fetch_flightaware(lat, lon, radius)
-    fr24_data, fr24_errors = fetch_flightradar24(lat, lon, radius)
+    # Fetch from all sources in parallel to minimize latency
+    # (Critical for Raspberry Pi where sequential timeouts add up)
+    local_data, local_errors = [], []
+    fa_data, fa_errors = [], []
+    fr24_data, fr24_errors = [], []
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(fetch_local_data): 'local',
+            executor.submit(fetch_flightaware, lat, lon, radius): 'fa',
+            executor.submit(fetch_flightradar24, lat, lon, radius): 'fr24',
+        }
+
+        for future in as_completed(futures):
+            source = futures[future]
+            try:
+                data, errors = future.result()
+                if source == 'local':
+                    local_data, local_errors = data, errors
+                elif source == 'fa':
+                    fa_data, fa_errors = data, errors
+                elif source == 'fr24':
+                    fr24_data, fr24_errors = data, errors
+            except Exception as e:
+                logger.error(f"Error fetching {source} data: {e}")
+                if source == 'local':
+                    local_errors = [f"Local error: {e}"]
+                elif source == 'fa':
+                    fa_errors = [f"FlightAware error: {e}"]
+                elif source == 'fr24':
+                    fr24_errors = [f"FR24 error: {e}"]
 
     clean_data = deconflict_data(fa_data, fr24_data, local_data)
 
@@ -48,27 +77,36 @@ def get_flights():
     # Calculate distance and Az/El for each flight
     for f in clean_data:
         if f['lat'] is not None and f['lon'] is not None:
-             f['distance_from_obs'] = haversine_distance(lat, lon, f['lat'], f['lon'])
+            f['distance_from_obs'] = haversine_distance(lat, lon, f['lat'], f['lon'])
 
-             # Calculate Azimuth and Elevation
-             # Aircraft altitude is usually in feet in our normalized data (from FR24/FA/Local)
-             # We need to convert it to meters for the calculation.
-             # f['altitude'] is feet.
-             ac_alt_m = (f.get('altitude', 0) or 0) * 0.3048
+            # Calculate Azimuth and Elevation
+            # Aircraft altitude is in feet, convert to meters for calculation
+            ac_alt_m = (f.get('altitude', 0) or 0) * 0.3048
 
-             az, el = calculate_az_el(lat, lon, obs_alt, f['lat'], f['lon'], ac_alt_m)
-             f['azimuth'] = az
-             f['elevation'] = el
+            az, el = calculate_az_el(lat, lon, obs_alt, f['lat'], f['lon'], ac_alt_m)
+            f['azimuth'] = az
+            f['elevation'] = el
         else:
-             f['distance_from_obs'] = float('inf')
-             f['azimuth'] = 0
-             f['elevation'] = 0
+            f['distance_from_obs'] = float('inf')
+            f['azimuth'] = 0
+            f['elevation'] = 0
 
     return jsonify({"flights": clean_data, "messages": local_errors + fa_errors + fr24_errors})
 
 if __name__ == '__main__':
+    import os
     config = load_config()
     host = config['server']['host']
     port = config['server']['port']
-    logger.info(f"Starting Flight Tracker on http://{host}:{port}")
-    app.run(host=host, port=port, debug=True)
+
+    # Only enable debug mode if explicitly requested via environment variable
+    # NEVER run debug=True in production - it enables arbitrary code execution
+    debug_mode = os.environ.get('FLASK_DEBUG', '').lower() in ('1', 'true', 'yes')
+
+    if debug_mode:
+        logger.warning("Running in DEBUG mode - do not use in production!")
+        app.run(host=host, port=port, debug=True)
+    else:
+        logger.info(f"Starting Flight Tracker on http://{host}:{port}")
+        logger.info(f"For production, consider using: gunicorn -w 2 -b {host}:{port} app:app")
+        app.run(host=host, port=port, debug=False, threaded=True)

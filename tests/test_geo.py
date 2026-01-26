@@ -1,6 +1,6 @@
 import unittest
 import math
-from tracker.geo import calculate_az_el
+from tracker.geo import calculate_az_el, get_bounding_box
 
 class TestGeoCalc(unittest.TestCase):
 
@@ -56,7 +56,27 @@ class TestGeoCalc(unittest.TestCase):
         # Obs: 0,0, 1000m. Target: 1.0, 0, 0m.
         az, el = calculate_az_el(0, 0, 1000, 1.0, 0, 0)
         self.assertAlmostEqual(az, 0.0, delta=0.1)
-        self.assertAlmostEqual(el, 0.0, delta=1.0) # Approx check
+        self.assertAlmostEqual(el, 0.0, delta=1.0)  # Approx check
+
+    def test_bounding_box_at_poles(self):
+        # Test that bounding box calculation doesn't fail at extreme latitudes
+        # Previously this would cause division by zero at lat=90
+
+        # At North Pole
+        min_lat, max_lat, min_lon, max_lon = get_bounding_box(90.0, 0.0, 50)
+        self.assertTrue(math.isfinite(min_lon))
+        self.assertTrue(math.isfinite(max_lon))
+
+        # At South Pole
+        min_lat, max_lat, min_lon, max_lon = get_bounding_box(-90.0, 0.0, 50)
+        self.assertTrue(math.isfinite(min_lon))
+        self.assertTrue(math.isfinite(max_lon))
+
+        # Near pole (89.99 degrees)
+        min_lat, max_lat, min_lon, max_lon = get_bounding_box(89.99, 0.0, 50)
+        self.assertTrue(math.isfinite(min_lon))
+        self.assertTrue(math.isfinite(max_lon))
+
 
 if __name__ == '__main__':
     unittest.main()

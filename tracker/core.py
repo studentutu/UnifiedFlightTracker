@@ -1,118 +1,172 @@
+"""Core deconfliction algorithm for merging flight data from multiple sources."""
+
+from typing import Any, Optional
+
 from .geo import haversine_distance
 
-def deconflict_data(fa_data, fr24_data, local_data=None):
-    """
-    Merges data prioritizing Local > ICAO Hex matching + Spatial backup.
-    """
-    SPATIAL_THRESHOLD_NM = 6.0
-    if local_data is None: local_data = []
+# Maximum distance in nautical miles for spatial merge
+SPATIAL_THRESHOLD_NM = 6.0
 
-    merged_results = {}
 
-    def clean_id(f): return str(f['hex_id']).strip().lower()
+def deconflict_data(
+    fa_data: list[dict[str, Any]],
+    fr24_data: list[dict[str, Any]],
+    local_data: Optional[list[dict[str, Any]]] = None
+) -> list[dict[str, Any]]:
+    """
+    Merge flight data from multiple sources with intelligent deduplication.
+
+    Priority order:
+    1. Local ADS-B data (highest priority - most accurate position)
+    2. ICAO hex code match
+    3. Callsign match
+    4. Spatial proximity (within threshold)
+
+    Args:
+        fa_data: List of normalized flights from FlightAware
+        fr24_data: List of normalized flights from Flightradar24
+        local_data: List of normalized flights from local ADS-B receivers
+
+    Returns:
+        List of deduplicated, merged flights sorted by hex_id
+    """
+    if local_data is None:
+        local_data = []
+
+    merged_results: dict[str, dict[str, Any]] = {}  # hex_id -> flight dict
+    callsign_index: dict[str, str] = {}  # callsign -> hex_id (for callsign lookups)
+
+    def clean_id(f: dict[str, Any]) -> str:
+        """Normalize hex_id to lowercase string."""
+        return str(f.get('hex_id', '')).strip().lower()
+
+    def clean_callsign(f: dict[str, Any]) -> str:
+        """Normalize callsign to uppercase string."""
+        cs = f.get('callsign', '')
+        return cs.strip().upper() if cs else ''
+
+    def update_position(existing: dict[str, Any], newer: dict[str, Any]) -> None:
+        """Update existing flight with newer position data if timestamp is fresher."""
+        ts_exist = existing.get('timestamp', 0)
+        ts_new = newer.get('timestamp', 0)
+
+        if ts_new > ts_exist:
+            existing['lat'] = newer['lat']
+            existing['lon'] = newer['lon']
+            existing['heading'] = newer['heading']
+            existing['altitude'] = newer['altitude']
+            existing['speed'] = newer['speed']
+            existing['timestamp'] = ts_new
+
+    def update_source_label(existing: dict[str, Any], source_label: str) -> None:
+        """Update the source label to reflect merged data."""
+        if "Local" in existing['source']:
+            if source_label not in existing['source']:
+                existing['source'] = f"{existing['source']} + {source_label}"
+        else:
+            existing['source'] = "Merged"
 
     # 1. Start with Local Data (Highest Priority)
     for f in local_data:
-        # We track sources internally, but no longer store a set directly in the output dict
-        # to avoid JSON serialization issues. We update 'source' string instead.
-        merged_results[clean_id(f)] = f
+        f_id = clean_id(f)
+        merged_results[f_id] = f
+        cs = clean_callsign(f)
+        if cs:
+            callsign_index[cs] = f_id
 
-    # Helper to merge into existing
-    def merge_flight(f_new, source_label):
+    def try_merge(f_new: dict[str, Any], source_label: str) -> bool:
+        """
+        Attempt to merge a flight using hex_id or callsign match.
+
+        Returns:
+            True if merged, False if no match found
+        """
         f_id = clean_id(f_new)
+        cs = clean_callsign(f_new)
 
-        # Exact Match
+        # Try exact hex_id match
         if f_id in merged_results:
             existing = merged_results[f_id]
-
-            # Timestamp Logic: Keep Freshest Position
-            ts_exist = existing.get('timestamp', 0)
-            ts_new = f_new.get('timestamp', 0)
-
-            if ts_new > ts_exist:
-                # Update fields
-                existing['lat'] = f_new['lat']
-                existing['lon'] = f_new['lon']
-                existing['heading'] = f_new['heading']
-                existing['altitude'] = f_new['altitude']
-                existing['speed'] = f_new['speed']
-                existing['timestamp'] = ts_new
-
-            # Update Source Label
-            if "Local" in existing['source']:
-                if source_label not in existing['source']:
-                     existing['source'] = f"{existing['source']} + {source_label}"
-            else:
-                existing['source'] = "Merged"
-
-            merged_results[f_id] = existing
+            update_position(existing, f_new)
+            update_source_label(existing, source_label)
             return True
+
+        # Try callsign match (important for FlightAware which lacks ICAO hex)
+        if cs and cs in callsign_index:
+            existing_id = callsign_index[cs]
+            existing = merged_results[existing_id]
+            update_position(existing, f_new)
+            update_source_label(existing, source_label)
+            return True
+
         return False
 
-    # 2. Process FlightAware
-    unmerged_fa = []
-    for f in fa_data:
-        if not merge_flight(f, "FA"):
-            unmerged_fa.append(f)
+    def try_spatial_merge(candidate: dict[str, Any], source_label: str) -> bool:
+        """
+        Attempt to merge by spatial proximity within threshold.
 
-    # 3. Process FR24
-    unmerged_fr24 = []
-    for f in fr24_data:
-        if not merge_flight(f, "FR24"):
-            unmerged_fr24.append(f)
-
-    # 4. Spatial Deconfliction
-    def try_spatial_merge(candidate, source_label):
-        best_match = None
+        Returns:
+            True if merged, False if no nearby match found
+        """
+        best_match: Optional[dict[str, Any]] = None
         min_dist = float('inf')
 
+        c_lat, c_lon = candidate.get('lat'), candidate.get('lon')
+        if c_lat is None or c_lon is None:
+            return False
+
         for m in merged_results.values():
-            if m['lat'] and m['lon'] and candidate['lat'] and candidate['lon']:
-                 dist = haversine_distance(m['lat'], m['lon'], candidate['lat'], candidate['lon'])
-                 if dist < min_dist and dist <= SPATIAL_THRESHOLD_NM:
-                     min_dist = dist
-                     best_match = m
+            m_lat, m_lon = m.get('lat'), m.get('lon')
+            if m_lat is None or m_lon is None:
+                continue
+
+            dist = haversine_distance(m_lat, m_lon, c_lat, c_lon)
+            if dist < min_dist and dist <= SPATIAL_THRESHOLD_NM:
+                min_dist = dist
+                best_match = m
 
         if best_match:
-            # Merge logic (same as exact match)
-            ts_exist = best_match.get('timestamp', 0)
-            ts_new = candidate.get('timestamp', 0)
-
-            if ts_new > ts_exist:
-                best_match['lat'] = candidate['lat']
-                best_match['lon'] = candidate['lon']
-                best_match['heading'] = candidate['heading']
-                best_match['altitude'] = candidate['altitude']
-                best_match['speed'] = candidate['speed']
-                best_match['timestamp'] = ts_new
-
-            if "Local" in best_match['source']:
-                 if source_label not in best_match['source']:
-                     best_match['source'] += f" + {source_label}"
-            else:
-                 best_match['source'] = "Merged"
+            update_position(best_match, candidate)
+            update_source_label(best_match, source_label)
             return True
+
         return False
 
-    # Try spatial merge for FA
-    final_fa = []
+    # 2. Process FlightAware - try hex/callsign match first
+    unmerged_fa: list[dict[str, Any]] = []
+    for f in fa_data:
+        if not try_merge(f, "FA"):
+            unmerged_fa.append(f)
+
+    # 3. Process FR24 - try hex/callsign match first
+    unmerged_fr24: list[dict[str, Any]] = []
+    for f in fr24_data:
+        if not try_merge(f, "FR24"):
+            unmerged_fr24.append(f)
+
+    # 4. Spatial merge for remaining FA flights
+    final_fa: list[dict[str, Any]] = []
     for f in unmerged_fa:
         if not try_spatial_merge(f, "FA"):
             final_fa.append(f)
 
     # Add remaining FA to results
     for f in final_fa:
-        merged_results[clean_id(f)] = f
+        f_id = clean_id(f)
+        merged_results[f_id] = f
+        cs = clean_callsign(f)
+        if cs:
+            callsign_index[cs] = f_id
 
-    # Try spatial merge for FR24
-    final_fr24 = []
+    # 5. Spatial merge for remaining FR24 flights
+    final_fr24: list[dict[str, Any]] = []
     for f in unmerged_fr24:
         if not try_spatial_merge(f, "FR24"):
             final_fr24.append(f)
 
-    # Add remaining FR24
+    # Add remaining FR24 to results
     for f in final_fr24:
-        merged_results[clean_id(f)] = f
+        f_id = clean_id(f)
+        merged_results[f_id] = f
 
-    sorted_flights = sorted(list(merged_results.values()), key=lambda x: x['hex_id'])
-    return sorted_flights
+    return sorted(merged_results.values(), key=lambda x: x.get('hex_id', ''))
