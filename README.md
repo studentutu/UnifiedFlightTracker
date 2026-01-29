@@ -59,7 +59,7 @@ cd UnifiedFlightTracker
 
 2. Create and activate a virtual environment:
 ```bash
-python3 -m venv venv
+python3 -m venv --system-site-packages <venv_name>
 source venv/bin/activate
 ```
 
