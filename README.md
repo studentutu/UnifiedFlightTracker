@@ -255,31 +255,160 @@ UnifiedFlightTracker/
    systemctl status dump1090-fa
    ```
 
-2. Check if the data endpoint is accessible:
+2. Check if the data endpoint is accessible locally:
    ```bash
    curl http://localhost:8080/data/aircraft.json
    ```
 
-3. For remote connections, ensure the RPi allows network access:
+3. For remote connections, test from your remote machine:
    ```bash
-   # From your remote machine
    curl http://<rpi-ip>:8080/data/aircraft.json
    ```
 
 ### Connection refused to remote tracker
 
-1. Verify the RPi IP address is correct
-2. Check firewall settings on the RPi:
-   ```bash
-   sudo ufw status
-   ```
-3. Ensure lighttpd or the dump1090 web server is running
+#### Step 1: Verify basic network connectivity
+
+```bash
+# Test if the RPi is reachable
+ping <rpi-ip>
+
+# Test if the port is open
+nc -zv <rpi-ip> 8080
+```
+
+#### Step 2: Check firewall status on the Raspberry Pi
+
+```bash
+sudo ufw status
+```
+
+**If UFW is active and blocking connections:**
+
+```bash
+# Allow dump1090 web interface (port 8080)
+sudo ufw allow 8080/tcp
+
+# Allow dump978 web interface (port 8978)
+sudo ufw allow 8978/tcp
+
+# Allow the Flight Tracker web server (port 5000)
+sudo ufw allow 5000/tcp
+
+# Verify the rules were added
+sudo ufw status
+```
+
+**If UFW is inactive but connections still fail, check iptables:**
+
+```bash
+# List current iptables rules
+sudo iptables -L -n
+
+# If needed, allow the ports (temporary, resets on reboot)
+sudo iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 8978 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 5000 -j ACCEPT
+```
+
+#### Step 3: Verify the web server is listening on all interfaces
+
+```bash
+# Check what addresses dump1090 is listening on
+sudo ss -tlnp | grep 8080
+```
+
+The output should show `0.0.0.0:8080` (all interfaces) not `127.0.0.1:8080` (localhost only).
+
+**If lighttpd is only listening on localhost**, edit `/etc/lighttpd/lighttpd.conf`:
+
+```bash
+sudo nano /etc/lighttpd/lighttpd.conf
+```
+
+Change or add:
+```
+server.bind = "0.0.0.0"
+```
+
+Then restart lighttpd:
+```bash
+sudo systemctl restart lighttpd
+```
+
+#### Step 4: Verify dump1090-fa is serving data
+
+```bash
+# Check if dump1090-fa service is running
+sudo systemctl status dump1090-fa
+
+# Restart if needed
+sudo systemctl restart dump1090-fa
+
+# Check the service logs for errors
+sudo journalctl -u dump1090-fa -n 50
+```
+
+#### Step 5: Check for IP address changes
+
+If using DHCP, the RPi's IP may have changed. Find the current IP:
+
+```bash
+# On the Raspberry Pi
+hostname -I
+```
+
+Update `tracker_host` in `config.yaml` on your remote machine to match.
+
+### Network ports reference
+
+| Service | Port | Protocol | Description |
+|---------|------|----------|-------------|
+| dump1090-fa | 8080 | TCP | Aircraft JSON data |
+| dump978-fa | 8978 | TCP | UAT aircraft JSON data |
+| Flight Tracker | 5000 | TCP | Web dashboard |
+| dump1090 Beast | 30005 | TCP | Raw data feed (not needed for this app) |
 
 ### API data not appearing
 
 1. Verify API keys are correctly entered in `config.yaml`
-2. Check the application logs for API errors
-3. FlightAware and FR24 require valid subscriptions
+2. Check the application logs for API errors:
+   ```bash
+   # Run with debug output
+   FLASK_DEBUG=1 python3 app.py
+   ```
+3. FlightAware and FR24 require valid paid subscriptions
+4. Test API connectivity:
+   ```bash
+   # Test FlightAware API (replace with your key)
+   curl -u "YOUR_API_KEY:" "https://aeroapi.flightaware.com/aeroapi/flights/search?query=-latlong+%2239.0+-75.0+39.5+-74.5%22"
+   ```
+
+### Common issues on Ubuntu 24.04
+
+**Python command not found:**
+```bash
+# Use python3 explicitly
+python3 app.py
+
+# Or create an alias
+alias python=python3
+```
+
+**Permission denied on port 5000:**
+```bash
+# Use a port above 1024, or run with sudo (not recommended)
+# Edit config.yaml and change server.port to 8000 or similar
+```
+
+**Module not found errors:**
+```bash
+# Ensure virtual environment is activated
+source venv/bin/activate
+
+# Reinstall dependencies
+pip install -r requirements.txt
+```
 
 ## Testing
 

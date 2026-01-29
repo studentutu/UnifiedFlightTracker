@@ -18,8 +18,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "google_maps": "YOUR_GOOGLE_MAPS_API_KEY"
     },
     "local_sources": {
-        "dump1090": "/run/dump1090-fa/aircraft.json",
-        "dump978": "/run/dump978-fa/aircraft.json"
+        # Tracker host: "localhost" for local RPi5, or IP address for remote RPi5
+        # Examples: "localhost", "192.168.1.100", "rpi5.local"
+        "tracker_host": "localhost",
+        # Source paths/URLs - leave empty to use auto-detection based on platform
+        # On RPi5 (ARM): prefers local file paths
+        # On x86_64: prefers HTTP URLs using tracker_host
+        "dump1090": "",
+        "dump978": ""
     },
     "observer": {
         "latitude": 39.0,
