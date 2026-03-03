@@ -101,14 +101,18 @@ def fetch_json_from_path_or_url(path_or_url: str) -> Optional[dict[str, Any]]:
                     return data
             else:
                 logger.debug(f"Local file not found: {path_or_url}")
-    except requests.RequestException as e:
+    except requests.exceptions.Timeout as e:
+        logger.warning(f"HTTP timeout fetching {path_or_url}: {e}")
+    except requests.exceptions.ConnectionError as e:
+        logger.debug(f"Connection error fetching {path_or_url}: {e}")
+    except requests.exceptions.RequestException as e:
         logger.warning(f"HTTP error fetching {path_or_url}: {e}")
     except json.JSONDecodeError as e:
         logger.warning(f"Invalid JSON from {path_or_url}: {e}")
     except OSError as e:
         logger.warning(f"File read error for {path_or_url}: {e}")
-    except Exception as e:
-        logger.warning(f"Unexpected error reading {path_or_url}: {e}")
+    except (TypeError, ValueError) as e:
+        logger.warning(f"Data parsing error from {path_or_url}: {e}")
     return None
 
 

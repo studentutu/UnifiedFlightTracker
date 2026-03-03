@@ -7,6 +7,20 @@ from .geo import haversine_distance
 # Maximum distance in nautical miles for spatial merge
 SPATIAL_THRESHOLD_NM = 6.0
 
+# Keys for cached normalized values
+_NORM_HEX_KEY = '_norm_hex'
+_NORM_CS_KEY = '_norm_cs'
+
+
+def _normalize_flights(flights: list[dict[str, Any]]) -> None:
+    """Pre-normalize hex_id and callsign for all flights to avoid repeated string operations."""
+    for f in flights:
+        if _NORM_HEX_KEY not in f:
+            f[_NORM_HEX_KEY] = str(f.get('hex_id', '')).strip().lower()
+        if _NORM_CS_KEY not in f:
+            cs = f.get('callsign', '')
+            f[_NORM_CS_KEY] = cs.strip().upper() if cs else ''
+
 
 def deconflict_data(
     fa_data: list[dict[str, Any]],
@@ -33,17 +47,21 @@ def deconflict_data(
     if local_data is None:
         local_data = []
 
+    # Pre-normalize all flights once at the start
+    _normalize_flights(local_data)
+    _normalize_flights(fa_data)
+    _normalize_flights(fr24_data)
+
     merged_results: dict[str, dict[str, Any]] = {}  # hex_id -> flight dict
     callsign_index: dict[str, str] = {}  # callsign -> hex_id (for callsign lookups)
 
     def clean_id(f: dict[str, Any]) -> str:
-        """Normalize hex_id to lowercase string."""
-        return str(f.get('hex_id', '')).strip().lower()
+        """Get pre-normalized hex_id."""
+        return f.get(_NORM_HEX_KEY, '')
 
     def clean_callsign(f: dict[str, Any]) -> str:
-        """Normalize callsign to uppercase string."""
-        cs = f.get('callsign', '')
-        return cs.strip().upper() if cs else ''
+        """Get pre-normalized callsign."""
+        return f.get(_NORM_CS_KEY, '')
 
     def update_position(existing: dict[str, Any], newer: dict[str, Any]) -> None:
         """Update existing flight with newer position data if timestamp is fresher."""

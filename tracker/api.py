@@ -86,6 +86,12 @@ def fetch_flightaware(
             if not pos:
                 continue
 
+            # Validate coordinates are present and not None
+            pos_lat = pos.get('latitude')
+            pos_lon = pos.get('longitude')
+            if pos_lat is None or pos_lon is None:
+                continue
+
             ident = f.get('ident') or 'Unknown'
             ts = parse_fa_time(pos.get('timestamp', ''))
 
@@ -99,8 +105,8 @@ def fetch_flightaware(
                 # Deconfliction will use callsign matching or spatial proximity instead
                 "hex_id": f"fa_{ident.lower()}",
                 "callsign": ident,
-                "lat": pos.get('latitude'),
-                "lon": pos.get('longitude'),
+                "lat": pos_lat,
+                "lon": pos_lon,
                 "heading": pos.get('heading', 0),
                 "altitude": altitude_ft,
                 "speed": pos.get('groundspeed', 0),
@@ -109,18 +115,31 @@ def fetch_flightaware(
             })
         return normalized_flights, []
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"FlightAware API Error: {e}")
+    except requests.exceptions.Timeout as e:
+        logger.warning(f"FlightAware API timeout: {e}")
+        return [], ["FlightAware Error: Request timed out"]
+    except requests.exceptions.ConnectionError as e:
+        logger.warning(f"FlightAware connection error: {e}")
+        return [], ["FlightAware Error: Connection failed"]
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"FlightAware HTTP error: {e}")
         msg = str(e)
-        if hasattr(e, 'response') and e.response is not None:
+        if e.response is not None:
             if e.response.status_code == 400:
                 msg = "400 - Bad Request (Check Query Syntax)"
+            elif e.response.status_code == 401:
+                msg = "401 - Unauthorized (Check API Key)"
+            elif e.response.status_code == 429:
+                msg = "429 - Rate Limited"
             else:
                 msg = f"{e.response.status_code} - {e.response.reason}"
         return [], [f"FlightAware Error: {msg}"]
-    except Exception as e:
-        logger.error(f"Unexpected FlightAware Error: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"FlightAware request error: {e}")
         return [], [f"FlightAware Error: {str(e)}"]
+    except (KeyError, TypeError, ValueError) as e:
+        logger.error(f"FlightAware data parsing error: {e}")
+        return [], [f"FlightAware Error: Invalid response data"]
 
 
 def fetch_flightradar24(
@@ -163,6 +182,12 @@ def fetch_flightradar24(
 
         normalized_flights: list[dict[str, Any]] = []
         for f in data.get('data', []):
+            # Validate coordinates are present
+            f_lat = f.get('lat')
+            f_lon = f.get('lon')
+            if f_lat is None or f_lon is None:
+                continue
+
             raw_hex = f.get('hex')
             safe_hex = str(raw_hex).lower() if raw_hex else None
             safe_callsign = f.get('callsign') or 'Unknown'
@@ -172,8 +197,8 @@ def fetch_flightradar24(
                 "source": "Flightradar24",
                 "hex_id": safe_hex or safe_callsign.lower(),
                 "callsign": safe_callsign,
-                "lat": f.get('lat'),
-                "lon": f.get('lon'),
+                "lat": f_lat,
+                "lon": f_lon,
                 "heading": f.get('track', 0),
                 "altitude": f.get('alt', 0),
                 "speed": f.get('gs', 0),
@@ -182,12 +207,26 @@ def fetch_flightradar24(
             })
         return normalized_flights, []
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"FR24 API Error: {e}")
+    except requests.exceptions.Timeout as e:
+        logger.warning(f"FR24 API timeout: {e}")
+        return [], ["FR24 Error: Request timed out"]
+    except requests.exceptions.ConnectionError as e:
+        logger.warning(f"FR24 connection error: {e}")
+        return [], ["FR24 Error: Connection failed"]
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"FR24 HTTP error: {e}")
         msg = str(e)
-        if hasattr(e, 'response') and e.response is not None:
-            msg = f"{e.response.status_code} - {e.response.text}"
+        if e.response is not None:
+            if e.response.status_code == 401:
+                msg = "401 - Unauthorized (Check API Token)"
+            elif e.response.status_code == 429:
+                msg = "429 - Rate Limited"
+            else:
+                msg = f"{e.response.status_code} - {e.response.reason}"
         return [], [f"FR24 Error: {msg}"]
-    except Exception as e:
-        logger.error(f"Unexpected FR24 Error: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"FR24 request error: {e}")
         return [], [f"FR24 Error: {str(e)}"]
+    except (KeyError, TypeError, ValueError) as e:
+        logger.error(f"FR24 data parsing error: {e}")
+        return [], ["FR24 Error: Invalid response data"]

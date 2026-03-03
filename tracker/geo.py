@@ -36,10 +36,14 @@ def get_bounding_box(
     cos_lat = math.cos(math.radians(safe_lat))
     lon_delta = math.degrees(radius_nm / EARTH_RADIUS_NM / cos_lat)
 
-    min_lat = lat - lat_delta
-    max_lat = lat + lat_delta
-    min_lon = lon - lon_delta
-    max_lon = lon + lon_delta
+    # Clamp longitude delta to prevent extreme values at high latitudes
+    # Max reasonable delta is 180 degrees (half the globe)
+    lon_delta = min(lon_delta, 180.0)
+
+    min_lat = max(-90.0, lat - lat_delta)
+    max_lat = min(90.0, lat + lat_delta)
+    min_lon = max(-180.0, lon - lon_delta)
+    max_lon = min(180.0, lon + lon_delta)
 
     return round(min_lat, 4), round(max_lat, 4), round(min_lon, 4), round(max_lon, 4)
 
@@ -66,6 +70,8 @@ def haversine_distance(
     dlambda = math.radians(lon2 - lon1)
 
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    # Clamp to [0, 1] to prevent math domain error from floating-point precision
+    a = max(0.0, min(1.0, a))
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
     return EARTH_RADIUS_NM * c
@@ -117,6 +123,8 @@ def calculate_az_el(
     sin_dlat_2 = math.sin((lat2_rad - lat1_rad) / 2) ** 2
     sin_dlon_2 = math.sin(d_lon / 2) ** 2
     a = sin_dlat_2 + math.cos(lat1_rad) * math.cos(lat2_rad) * sin_dlon_2
+    # Clamp to [0, 1] to prevent math domain error from floating-point precision
+    a = max(0.0, min(1.0, a))
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
     # Distances from Earth center

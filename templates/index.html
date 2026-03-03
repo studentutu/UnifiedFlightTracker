@@ -196,20 +196,33 @@
     let observerMarker; // House icon marker
     let refreshInterval;
     let zoomTimeout; // Timer for zoom controls
-    
+
     // Sort State: { col: string, dir: number } (0: none, 1: asc, 2: desc)
     let sortState = { col: null, dir: 0 };
     let flightCache = [];
-    
+
     // View State
     let currentView = 'map'; // 'map' or 'sky'
     let skyCanvas, skyCtx;
     let selectedHexId = null;
     let skyAnimationId = null;
 
+    // Cached off-screen canvas for static sky view background
+    let skyBackgroundCanvas = null;
+    let skyBackgroundCtx = null;
+    let lastSkyDimensions = { w: 0, h: 0 };
+
     // Icons (initialized in initMap to ensure google is defined)
     let planeIcon;
     let houseIcon;
+
+    // HTML escape function to prevent XSS
+    function escapeHtml(text) {
+        if (text == null) return '';
+        const div = document.createElement('div');
+        div.textContent = String(text);
+        return div.innerHTML;
+    }
 
     function initMap() {
         planeIcon = {
@@ -343,7 +356,7 @@
             const data = await response.json();
             
             if (data.messages && data.messages.length > 0) {
-                 const errorHtml = data.messages.join(", ");
+                 const errorHtml = data.messages.map(m => escapeHtml(m)).join(", ");
                  statusDiv.innerHTML = `<span class="error-text">Warnings: ${errorHtml}</span>`;
             } else {
                  statusDiv.innerHTML = `Tracking ${data.flights.length} aircraft. Updated: ${new Date().toLocaleTimeString()}`;
@@ -385,7 +398,7 @@
             
             icon.fillColor = color;
 
-            const contentString = `<div style="color:black"><b>${f.callsign}</b><br>Hex: ${f.hex_id}<br>Alt: ${f.altitude}ft<br>Az: ${f.azimuth}° El: ${f.elevation}°</div>`;
+            const contentString = `<div style="color:black"><b>${escapeHtml(f.callsign)}</b><br>Hex: ${escapeHtml(f.hex_id)}<br>Alt: ${escapeHtml(f.altitude)}ft<br>Az: ${escapeHtml(f.azimuth)}° El: ${escapeHtml(f.elevation)}°</div>`;
 
             if (markers[f.hex_id]) {
                 markers[f.hex_id].setPosition(pos);
@@ -431,6 +444,70 @@
         if (currentView === 'sky') drawSkyView(flightCache);
     }
 
+    function drawSkyBackground(w, h) {
+        // Create or resize background canvas if needed
+        if (!skyBackgroundCanvas || lastSkyDimensions.w !== w || lastSkyDimensions.h !== h) {
+            skyBackgroundCanvas = document.createElement('canvas');
+            skyBackgroundCanvas.width = w;
+            skyBackgroundCanvas.height = h;
+            skyBackgroundCtx = skyBackgroundCanvas.getContext('2d');
+            lastSkyDimensions = { w, h };
+
+            const cx = w / 2;
+            const cy = h / 2;
+            const r = Math.min(cx, cy) - 40;
+
+            // Draw static background elements
+            skyBackgroundCtx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+            skyBackgroundCtx.lineWidth = 1;
+            skyBackgroundCtx.setLineDash([5, 5]);
+
+            // Ring for 0 deg (Horizon)
+            skyBackgroundCtx.beginPath();
+            skyBackgroundCtx.arc(cx, cy, r, 0, 2 * Math.PI);
+            skyBackgroundCtx.stroke();
+
+            // Ring for 30 deg
+            const r30 = r * (1 - 30/90);
+            skyBackgroundCtx.beginPath();
+            skyBackgroundCtx.arc(cx, cy, r30, 0, 2 * Math.PI);
+            skyBackgroundCtx.stroke();
+
+            // Ring for 60 deg
+            const r60 = r * (1 - 60/90);
+            skyBackgroundCtx.beginPath();
+            skyBackgroundCtx.arc(cx, cy, r60, 0, 2 * Math.PI);
+            skyBackgroundCtx.stroke();
+
+            skyBackgroundCtx.setLineDash([]);
+
+            // Draw Crosshairs (N-S, E-W)
+            skyBackgroundCtx.beginPath();
+            skyBackgroundCtx.moveTo(cx, cy - r);
+            skyBackgroundCtx.lineTo(cx, cy + r);
+            skyBackgroundCtx.moveTo(cx - r, cy);
+            skyBackgroundCtx.lineTo(cx + r, cy);
+            skyBackgroundCtx.stroke();
+
+            // Draw Labels (N, E, S, W)
+            skyBackgroundCtx.fillStyle = "white";
+            skyBackgroundCtx.font = "bold 14px Arial";
+            skyBackgroundCtx.textAlign = "center";
+            skyBackgroundCtx.textBaseline = "middle";
+
+            skyBackgroundCtx.fillText("N", cx, cy - r - 15);
+            skyBackgroundCtx.fillText("S", cx, cy + r + 15);
+            skyBackgroundCtx.fillText("E", cx + r + 15, cy);
+            skyBackgroundCtx.fillText("W", cx - r - 15, cy);
+
+            skyBackgroundCtx.fillStyle = "rgba(255, 255, 255, 0.5)";
+            skyBackgroundCtx.font = "10px Arial";
+            skyBackgroundCtx.fillText("30°", cx + r30 + 10, cy + 10);
+            skyBackgroundCtx.fillText("60°", cx + r60 + 10, cy + 10);
+        }
+        return skyBackgroundCanvas;
+    }
+
     function drawSkyView(flights) {
         const w = skyCanvas.width;
         const h = skyCanvas.height;
@@ -438,59 +515,10 @@
         const cy = h / 2;
         const r = Math.min(cx, cy) - 40; // Max radius with padding
 
-        // Clear
+        // Clear and draw cached background
         skyCtx.clearRect(0, 0, w, h);
-
-        // Draw Background Rings
-        skyCtx.strokeStyle = "rgba(255, 255, 255, 0.3)";
-        skyCtx.lineWidth = 1;
-        skyCtx.setLineDash([5, 5]); // Dotted
-
-        // Elevations: 0, 30, 60. Center is 90.
-        // Radius mapping: r_pixel = R_max * (1 - el/90)
-
-        // Ring for 0 deg (Horizon) - Solid
-        skyCtx.beginPath();
-        skyCtx.arc(cx, cy, r, 0, 2 * Math.PI);
-        skyCtx.stroke();
-
-        // Ring for 30 deg
-        const r30 = r * (1 - 30/90);
-        skyCtx.beginPath();
-        skyCtx.arc(cx, cy, r30, 0, 2 * Math.PI);
-        skyCtx.stroke();
-
-        // Ring for 60 deg
-        const r60 = r * (1 - 60/90);
-        skyCtx.beginPath();
-        skyCtx.arc(cx, cy, r60, 0, 2 * Math.PI);
-        skyCtx.stroke();
-
-        skyCtx.setLineDash([]); // Reset
-
-        // Draw Crosshairs (N-S, E-W)
-        skyCtx.beginPath();
-        skyCtx.moveTo(cx, cy - r);
-        skyCtx.lineTo(cx, cy + r);
-        skyCtx.moveTo(cx - r, cy);
-        skyCtx.lineTo(cx + r, cy);
-        skyCtx.stroke();
-
-        // Draw Labels (N, E, S, W)
-        skyCtx.fillStyle = "white";
-        skyCtx.font = "bold 14px Arial";
-        skyCtx.textAlign = "center";
-        skyCtx.textBaseline = "middle";
-
-        skyCtx.fillText("N", cx, cy - r - 15);
-        skyCtx.fillText("S", cx, cy + r + 15);
-        skyCtx.fillText("E", cx + r + 15, cy);
-        skyCtx.fillText("W", cx - r - 15, cy);
-
-        skyCtx.fillStyle = "rgba(255, 255, 255, 0.5)";
-        skyCtx.font = "10px Arial";
-        skyCtx.fillText("30°", cx + r30 + 10, cy + 10);
-        skyCtx.fillText("60°", cx + r60 + 10, cy + 10);
+        const bgCanvas = drawSkyBackground(w, h);
+        skyCtx.drawImage(bgCanvas, 0, 0);
 
         // Plot Aircraft
         flights.forEach(f => {
@@ -588,7 +616,7 @@
             tooltip.style.display = 'block';
             tooltip.style.left = (mouseX + 10) + 'px';
             tooltip.style.top = (mouseY + 10) + 'px';
-            tooltip.innerHTML = `<b>${found.callsign}</b><br>Alt: ${found.altitude}ft<br>Az: ${found.azimuth}° El: ${found.elevation}°`;
+            tooltip.innerHTML = `<b>${escapeHtml(found.callsign)}</b><br>Alt: ${escapeHtml(found.altitude)}ft<br>Az: ${escapeHtml(found.azimuth)}° El: ${escapeHtml(found.elevation)}°`;
         } else {
             tooltip.style.display = 'none';
         }
@@ -650,7 +678,7 @@
             else if (f.source === "Flightradar24") sourceLabel = "FR24";
 
             // Allow full string for tooltip or more detail if needed, but for now:
-            const sourceHtml = `<span class="source-dot" style="background:${color}"></span>${sourceLabel}`;
+            const sourceHtml = `<span class="source-dot" style="background:${escapeHtml(color)}"></span>${escapeHtml(sourceLabel)}`;
 
             // Show distance to 1 decimal place, or '-' if invalid
             const distDisplay = (f.distance_from_obs !== undefined && f.distance_from_obs !== Infinity) 
@@ -658,12 +686,12 @@
                                 : "-";
 
             tr.innerHTML = `
-                <td style="font-family:monospace; font-weight:bold;">${f.hex_id.toUpperCase()}</td>
-                <td>${f.callsign}</td>
-                <td class="col-right">${f.altitude.toLocaleString()}</td>
-                <td class="col-right">${f.azimuth !== undefined ? f.azimuth.toFixed(0) : 0}°</td>
-                <td class="col-right">${f.elevation !== undefined ? f.elevation.toFixed(1) : 0}°</td>
-                <td class="col-right">${distDisplay}</td>
+                <td style="font-family:monospace; font-weight:bold;">${escapeHtml(f.hex_id ? f.hex_id.toUpperCase() : '')}</td>
+                <td>${escapeHtml(f.callsign)}</td>
+                <td class="col-right">${escapeHtml(f.altitude != null ? f.altitude.toLocaleString() : '0')}</td>
+                <td class="col-right">${escapeHtml(f.azimuth !== undefined ? f.azimuth.toFixed(0) : '0')}°</td>
+                <td class="col-right">${escapeHtml(f.elevation !== undefined ? f.elevation.toFixed(1) : '0')}°</td>
+                <td class="col-right">${escapeHtml(distDisplay)}</td>
                 <td>${sourceHtml}</td>
             `;
             

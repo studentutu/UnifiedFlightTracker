@@ -13,11 +13,17 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# Maximum search radius in nautical miles to prevent excessive API load
+MAX_RADIUS_NM = 500
+
+
 @app.route('/')
 def index():
     config = load_config()
-    api_key = config['api_keys'].get('google_maps', '')
-    is_default = (api_key == DEFAULT_CONFIG['api_keys']['google_maps'])
+    api_keys = config.get('api_keys', {})
+    api_key = api_keys.get('google_maps', '')
+    default_api_keys = DEFAULT_CONFIG.get('api_keys', {})
+    is_default = (api_key == default_api_keys.get('google_maps', ''))
 
     return render_template('index.html',
                           api_key=api_key,
@@ -37,6 +43,16 @@ def get_flights():
         radius = float(request.args.get('radius'))
     except (TypeError, ValueError):
         return jsonify({"flights": [], "messages": ["Invalid parameters"]}), 400
+
+    # Validate geographic parameters
+    if not (-90 <= lat <= 90):
+        return jsonify({"flights": [], "messages": ["Latitude must be between -90 and 90"]}), 400
+    if not (-180 <= lon <= 180):
+        return jsonify({"flights": [], "messages": ["Longitude must be between -180 and 180"]}), 400
+    if radius <= 0:
+        return jsonify({"flights": [], "messages": ["Radius must be positive"]}), 400
+    if radius > MAX_RADIUS_NM:
+        return jsonify({"flights": [], "messages": [f"Radius exceeds maximum of {MAX_RADIUS_NM} NM"]}), 400
 
     # Fetch from all sources in parallel to minimize latency
     # (Critical for Raspberry Pi where sequential timeouts add up)
@@ -87,7 +103,8 @@ def get_flights():
             f['azimuth'] = az
             f['elevation'] = el
         else:
-            f['distance_from_obs'] = float('inf')
+            # Use large number instead of Infinity for JSON compatibility
+            f['distance_from_obs'] = 99999.0
             f['azimuth'] = 0
             f['elevation'] = 0
 
