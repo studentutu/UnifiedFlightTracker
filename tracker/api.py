@@ -97,7 +97,7 @@ def fetch_flightaware(
 
             # FA altitude is in hundreds of feet (flight level), convert to feet
             altitude_fl = pos.get('altitude')
-            altitude_ft = altitude_fl * 100 if altitude_fl else 0
+            altitude_ft = (altitude_fl or 0) * 100
 
             normalized_flights.append({
                 "source": "FlightAware",

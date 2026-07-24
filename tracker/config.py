@@ -1,5 +1,6 @@
 """Configuration management with file caching and thread safety."""
 
+import copy
 import os
 import threading
 from typing import Any
@@ -66,13 +67,13 @@ def load_config() -> dict[str, Any]:
             try:
                 with open(CONFIG_FILE, 'w') as f:
                     yaml.dump(DEFAULT_CONFIG, f, default_flow_style=False)
-                _cached_config = DEFAULT_CONFIG.copy()
+                _cached_config = copy.deepcopy(DEFAULT_CONFIG)
                 _cached_mtime = os.path.getmtime(CONFIG_FILE)
                 logger.info(f"Created default configuration file at {CONFIG_FILE}")
                 return _cached_config
             except OSError as e:
                 logger.error(f"Failed to create default config file: {e}")
-                return DEFAULT_CONFIG.copy()
+                return copy.deepcopy(DEFAULT_CONFIG)
 
         # Check if file changed since last load
         try:
@@ -90,17 +91,17 @@ def load_config() -> dict[str, Any]:
                     logger.warning("Retaining previous valid configuration.")
                     return _cached_config
                 logger.warning("Using default configuration.")
-                return DEFAULT_CONFIG.copy()
+                return copy.deepcopy(DEFAULT_CONFIG)
 
-            # Merge with defaults to ensure all sections exist
+            # Merge with defaults to ensure all sections exist.
+            # Deepcopy inserted defaults so callers can't mutate DEFAULT_CONFIG via config.
             for section in DEFAULT_CONFIG:
                 if section not in config:
-                    config[section] = DEFAULT_CONFIG[section]
-                elif isinstance(DEFAULT_CONFIG[section], dict):
-                    # Deep merge for nested dicts
+                    config[section] = copy.deepcopy(DEFAULT_CONFIG[section])
+                elif isinstance(DEFAULT_CONFIG[section], dict) and isinstance(config.get(section), dict):
                     for key in DEFAULT_CONFIG[section]:
                         if key not in config[section]:
-                            config[section][key] = DEFAULT_CONFIG[section][key]
+                            config[section][key] = copy.deepcopy(DEFAULT_CONFIG[section][key])
 
             _cached_config = config
             _cached_mtime = current_mtime
@@ -113,16 +114,16 @@ def load_config() -> dict[str, Any]:
                 logger.warning("Retaining previous valid configuration due to parse error.")
                 return _cached_config
             logger.warning("Reverting to default configuration due to parse error.")
-            return DEFAULT_CONFIG.copy()
+            return copy.deepcopy(DEFAULT_CONFIG)
 
         except OSError as e:
             logger.error(f"Error reading config file: {e}")
             if _cached_config is not None:
                 return _cached_config
-            return DEFAULT_CONFIG.copy()
+            return copy.deepcopy(DEFAULT_CONFIG)
 
         except Exception as e:
             logger.error(f"Unexpected error loading config: {e}")
             if _cached_config is not None:
                 return _cached_config
-            return DEFAULT_CONFIG.copy()
+            return copy.deepcopy(DEFAULT_CONFIG)

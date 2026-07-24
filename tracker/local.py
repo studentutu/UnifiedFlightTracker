@@ -141,6 +141,15 @@ def normalize_local_flight(f: dict[str, Any], source_name: str) -> Optional[dict
     # Handle 'flight' (callsign) - typically has trailing spaces in dump1090
     callsign = f.get('flight', '').strip() or hex_id
 
+    # dump1090 reports alt_baro as the literal string "ground" when an aircraft
+    # is on the surface; treat it as altitude 0 so downstream unit conversions
+    # don't crash on non-numeric input.
+    raw_alt = f.get('alt_baro')
+    if raw_alt is None or isinstance(raw_alt, str):
+        raw_alt = f.get('alt_geom')
+    if raw_alt is None or isinstance(raw_alt, str):
+        raw_alt = 0
+
     return {
         "source": source_name,
         "hex_id": hex_id.lower(),
@@ -148,7 +157,7 @@ def normalize_local_flight(f: dict[str, Any], source_name: str) -> Optional[dict
         "lat": lat,
         "lon": lon,
         "heading": f.get('track', 0),
-        "altitude": f.get('alt_baro', f.get('alt_geom', 0)),
+        "altitude": raw_alt,
         "speed": f.get('gs', 0),
         "type": f.get('category', 'Unknown'),
         "timestamp": 0  # Placeholder, updated by caller
@@ -260,9 +269,13 @@ def fetch_local_data() -> tuple[list[dict[str, Any]], list[str]]:
     # Fetch 1090
     data_1090, err_1090 = _fetch_source(sources_1090, "Dump1090")
     if data_1090:
-        now_ts = data_1090.get('now', time.time())
+        now_ts = data_1090.get('now')
+        if now_ts is None:
+            now_ts = time.time()
         for f in data_1090.get('aircraft', []):
-            seen = f.get('seen', 999)
+            seen = f.get('seen')
+            if seen is None:
+                seen = 999
             if seen > MAX_AIRCRAFT_AGE_SECONDS:
                 continue
             norm = normalize_local_flight(f, "Local (1090)")
@@ -276,9 +289,13 @@ def fetch_local_data() -> tuple[list[dict[str, Any]], list[str]]:
     # Fetch 978
     data_978, err_978 = _fetch_source(sources_978, "Dump978")
     if data_978:
-        now_ts = data_978.get('now', time.time())
+        now_ts = data_978.get('now')
+        if now_ts is None:
+            now_ts = time.time()
         for f in data_978.get('aircraft', []):
-            seen = f.get('seen', 999)
+            seen = f.get('seen')
+            if seen is None:
+                seen = 999
             if seen > MAX_AIRCRAFT_AGE_SECONDS:
                 continue
             norm = normalize_local_flight(f, "Local (978)")
