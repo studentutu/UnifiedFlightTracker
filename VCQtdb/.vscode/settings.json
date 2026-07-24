@@ -1,0 +1,16 @@
+{
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "cmake.generator": "Ninja",
+    "cmake.configureOnOpen": true,
+    "cmake.debugConfig": {
+        "args": ["--url", "http://localhost:5001"]
+    },
+    "C_Cpp.default.cppStandard": "c++17",
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+    "editor.formatOnSave": false,
+    "files.associations": {
+        "*.h":   "cpp",
+        "*.hpp": "cpp",
+        "*.cpp": "cpp"
+    }
+}
